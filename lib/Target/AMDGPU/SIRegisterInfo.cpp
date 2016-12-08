@@ -203,6 +203,14 @@ bool SIRegisterInfo::trackLivenessAfterRegAlloc(const MachineFunction &MF) const
   return true;
 }
 
+int64_t SIRegisterInfo::getMUBUFInstrOffset(const MachineInstr *MI) const {
+  assert(SIInstrInfo::isMUBUF(*MI));
+
+  int OffIdx = AMDGPU::getNamedOperandIdx(MI->getOpcode(),
+                                          AMDGPU::OpName::offset);
+  return MI->getOperand(OffIdx).getImm();
+}
+
 int64_t SIRegisterInfo::getFrameIndexInstrOffset(const MachineInstr *MI,
                                                  int Idx) const {
   if (!SIInstrInfo::isMUBUF(*MI))
@@ -212,13 +220,16 @@ int64_t SIRegisterInfo::getFrameIndexInstrOffset(const MachineInstr *MI,
                                            AMDGPU::OpName::vaddr) &&
          "Should never see frame index on non-address operand");
 
-  int OffIdx = AMDGPU::getNamedOperandIdx(MI->getOpcode(),
-                                          AMDGPU::OpName::offset);
-  return MI->getOperand(OffIdx).getImm();
+  return getMUBUFInstrOffset(MI);
 }
 
 bool SIRegisterInfo::needsFrameBaseReg(MachineInstr *MI, int64_t Offset) const {
-  return MI->mayLoadOrStore();
+  if (!MI->mayLoadOrStore())
+    return false;
+
+  int64_t FullOffset = Offset + getMUBUFInstrOffset(MI);
+
+  return !isUInt<12>(FullOffset);
 }
 
 void SIRegisterInfo::materializeFrameBaseRegister(MachineBasicBlock *MBB,
@@ -295,7 +306,12 @@ void SIRegisterInfo::resolveFrameIndex(MachineInstr &MI, unsigned BaseReg,
 bool SIRegisterInfo::isFrameOffsetLegal(const MachineInstr *MI,
                                         unsigned BaseReg,
                                         int64_t Offset) const {
-  return SIInstrInfo::isMUBUF(*MI) && isUInt<12>(Offset);
+  if (!SIInstrInfo::isMUBUF(*MI))
+    return false;
+
+  int64_t NewOffset = Offset + getMUBUFInstrOffset(MI);
+
+  return isUInt<12>(NewOffset);
 }
 
 const TargetRegisterClass *SIRegisterInfo::getPointerRegClass(
@@ -569,14 +585,8 @@ void SIRegisterInfo::spillSGPR(MachineBasicBlock::iterator MI,
     std::tie(EltSize, ScalarStoreOp) = getSpillEltSize(RC->getSize(), true);
   }
 
-  const TargetRegisterClass *SubRC = nullptr;
-  unsigned NumSubRegs = 1;
   ArrayRef<int16_t> SplitParts = getRegSplitParts(RC, EltSize);
-
-  if (!SplitParts.empty()) {
-    NumSubRegs = SplitParts.size();
-    SubRC = getSubRegClass(RC, SplitParts[0]);
-  }
+  unsigned NumSubRegs = SplitParts.empty() ? 1 : SplitParts.size();
 
   // SubReg carries the "Kill" flag when SubReg == SuperReg.
   unsigned SubKillState = getKillRegState((NumSubRegs == 1) && IsKill);
@@ -720,14 +730,8 @@ void SIRegisterInfo::restoreSGPR(MachineBasicBlock::iterator MI,
     std::tie(EltSize, ScalarLoadOp) = getSpillEltSize(RC->getSize(), false);
   }
 
-  const TargetRegisterClass *SubRC = nullptr;
-  unsigned NumSubRegs = 1;
   ArrayRef<int16_t> SplitParts = getRegSplitParts(RC, EltSize);
-
-  if (!SplitParts.empty()) {
-    NumSubRegs = SplitParts.size();
-    SubRC = getSubRegClass(RC, SplitParts[0]);
-  }
+  unsigned NumSubRegs = SplitParts.empty() ? 1 : SplitParts.size();
 
   // SubReg carries the "Kill" flag when SubReg == SuperReg.
   int64_t FrOffset = FrameInfo.getObjectOffset(Index);
