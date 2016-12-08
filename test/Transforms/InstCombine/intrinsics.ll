@@ -27,6 +27,7 @@ declare double @llvm.ceil.f64(double %Val) nounwind readonly
 declare double @llvm.trunc.f64(double %Val) nounwind readonly
 declare double @llvm.rint.f64(double %Val) nounwind readonly
 declare double @llvm.nearbyint.f64(double %Val) nounwind readonly
+declare void @throwAnExceptionOrWhatever()
 
 define i8 @uaddtest1(i8 %A, i8 %B) {
   %x = call %overflow.result @llvm.uadd.with.overflow.i8(i8 %A, i8 %B)
@@ -253,6 +254,43 @@ define %ov.result.32 @umultest5(i32 %x, i32 %y) nounwind {
 ; CHECK-NEXT: %[[ret:.*]] = insertvalue %ov.result.32 { i32 undef, i1 true }, i32 %[[mul]], 0
 ; CHECK-NEXT: ret %ov.result.32 %[[ret]]
 }
+
+define i32 @gurutest(i32 %x, i32 %y) nounwind ssp {
+entry:
+  %mul1 = call %ov.result.32 @llvm.smul.with.overflow.i32(i32 %x, i32 %y)
+  %res = extractvalue %ov.result.32 %mul1, 0
+  %ov = extractvalue %ov.result.32 %mul1, 1
+  br i1 %ov, label %smul.true, label %smul.false
+
+smul.true:
+  tail call void @throwAnExceptionOrWhatever() nounwind
+  unreachable
+
+smul.false:
+  %0 = icmp ne i32 %res, 0
+  br i1 %0, label %retx, label %doadd
+
+retx:
+  ret i32 %x
+
+doadd:
+  %add = call %ov.result.32 @llvm.sadd.with.overflow.i32(i32 %x, i32 %y)
+  %addres = extractvalue %ov.result.32 %add, 0
+  %addov  = extractvalue %ov.result.32 %add, 1
+  br i1 %addov, label %sadd.true, label %retxplusy
+
+sadd.true:
+  tail call void @throwAnExceptionOrWhatever() nounwind
+  unreachable
+
+retxplusy:
+  ret i32 %addres
+
+; CHECK-LABEL: @gurutest(
+; CHECK: llvm.smul.with.overflow.i32(i32 %x, i32 %y)  
+; CHECK-NOT: llvm.sadd.with.overflow.i32(i32 %x, i32 %y)
+}
+
 
 define void @powi(double %V, double *%P) {
   %A = tail call double @llvm.powi.f64(double %V, i32 -1) nounwind

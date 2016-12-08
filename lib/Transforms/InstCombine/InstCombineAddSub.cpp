@@ -866,6 +866,41 @@ static bool checkRippleForAdd(const APInt &Op0KnownZero,
   return Op0ZeroPosition >= Op1OnePosition;
 }
 
+static bool CheckMulInBlockSpecialCase(BasicBlock *Cur, Value* Op1, Value *Op2) {
+  for (BasicBlock::iterator i = Cur->begin(), e = Cur->end(); i != e; ++i) {
+    Instruction &inst = *i;
+    if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(&inst)) {
+      if (II->getIntrinsicID() == Intrinsic::smul_with_overflow) {
+        DEBUG(dbgs() << "IC: Guru CheckMulInBlockSpecialCase = " << *II << '\n');
+        if ((II->getArgOperand(0) == Op1) && (II->getArgOperand(1) == Op2)) {
+          DEBUG(dbgs() << "IC: Guru Remove overflow check = " << *II << '\n');
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+//Current instruction is sadd. Check if the smul was done over the same values
+//in its predecessor's predecessor block. If so remove the overflow check with
+//sadd
+static bool CheckAddMulSpecialCase(Instruction *I, Value *B, Value *C) {
+  BasicBlock *cur = I->getParent(), *prev;
+  DEBUG(dbgs() << "IC: Guru CheckAddMulSpecialCase = " << *I << '\n');
+  if (cur) {
+    prev = cur->getSinglePredecessor();
+    if (prev) {
+      for (pred_iterator PI = pred_begin(prev), E = pred_end(prev); PI != E; ++PI) {
+        BasicBlock *BB = *PI;
+        if (CheckMulInBlockSpecialCase(BB, B, C)) {
+          return true; 
+        }
+      }
+    }
+  }
+  return false; 
+}
 /// Return true if we can prove that:
 ///    (sext (add LHS, RHS))  === (add (sext LHS), (sext RHS))
 /// This basically requires proving that the add in the original type would not
@@ -913,6 +948,9 @@ bool InstCombiner::WillNotOverflowSignedAdd(Value *LHS, Value *RHS,
     return true;
   if (checkRippleForAdd(RHSKnownZero, LHSKnownZero))
     return true;
+
+  if (CheckAddMulSpecialCase(&CxtI, LHS, RHS))
+    return true; 
 
   return false;
 }
